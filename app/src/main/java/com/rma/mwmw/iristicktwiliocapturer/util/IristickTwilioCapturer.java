@@ -3,13 +3,19 @@ package com.rma.mwmw.iristicktwiliocapturer.util;
 import android.content.Context;
 import android.graphics.Point;
 import android.support.annotation.NonNull;
+import android.util.Log;
 
 import com.iristick.smartglass.core.Headset;
 import com.iristick.smartglass.core.camera.CameraCharacteristics;
 import com.iristick.smartglass.core.camera.CaptureRequest;
 import com.twilio.video.VideoCapturer;
+import com.twilio.video.VideoDimensions;
 import com.twilio.video.VideoFormat;
+import com.twilio.video.VideoPixelFormat;
 
+import org.webrtc.CameraEnumerationAndroid;
+
+import java.util.ArrayList;
 import java.util.List;
 
 public class IristickTwilioCapturer implements VideoCapturer {
@@ -75,12 +81,20 @@ public class IristickTwilioCapturer implements VideoCapturer {
      */
     @Override
     public synchronized List<VideoFormat> getSupportedFormats() {
-        Point[] sizes = this.headset.getCameraCharacteristics(cameraNames[0])
-                .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                .getSizes(CaptureRequest.FORMAT_JPEG);
+        CameraCharacteristics.StreamConfigurationMap streamConfigurationMap = this.headset.getCameraCharacteristics(cameraNames[0])
+                .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
 
-        // Stuck here for now
-        throw new UnsupportedOperationException();
+        Point[] sizes = streamConfigurationMap.getSizes(CaptureRequest.FORMAT_JPEG);
+
+        List<VideoFormat> videoFormats = new ArrayList<>();
+        for (Point size : sizes) {
+            int frameRate = (int) Math.floor(1000000000L / streamConfigurationMap.getMinFrameDuration(size));
+            VideoDimensions videoDimensions = new VideoDimensions(size.x, size.y);
+            VideoFormat videoFormat = new VideoFormat(videoDimensions, frameRate, VideoPixelFormat.RGBA_8888);
+            videoFormats.add(videoFormat);
+        }
+
+        return videoFormats;
     }
 
     /** Indicates that the capturer is not a screen cast. */
