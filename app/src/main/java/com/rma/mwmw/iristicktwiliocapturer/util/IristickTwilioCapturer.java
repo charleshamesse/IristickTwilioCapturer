@@ -1,6 +1,8 @@
 package com.rma.mwmw.iristicktwiliocapturer.util;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.ImageFormat;
 import android.graphics.Point;
 import android.graphics.SurfaceTexture;
@@ -8,6 +10,7 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.SystemClock;
 import android.support.annotation.NonNull;
 import android.util.Log;
 import android.view.Surface;
@@ -24,14 +27,16 @@ import com.twilio.video.VideoCapturer;
 import com.twilio.video.VideoDimensions;
 import com.twilio.video.VideoFormat;
 import com.twilio.video.VideoPixelFormat;
+import com.twilio.video.VideoFrame;
 
 import org.webrtc.EglBase;
 import org.webrtc.SurfaceTextureHelper;
-import org.webrtc.VideoFrame;
 import org.webrtc.VideoSink;
 
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 public class IristickTwilioCapturer implements VideoCapturer {
 
@@ -286,6 +291,27 @@ public class IristickTwilioCapturer implements VideoCapturer {
                     return;
                 }
                 Log.i(TAG, "image available in callback" + image.getFormat());
+
+                ByteBuffer _buffer = image.getPlanes()[0].getBuffer();
+                byte[] _bytes = new byte[_buffer.capacity()];
+                _buffer.get(_bytes);
+                Bitmap viewBitmap = BitmapFactory.decodeByteArray(_bytes, 0, _bytes.length, null);
+
+                // Extract the frame from the bitmap
+                int bytes = viewBitmap.getByteCount();
+                ByteBuffer buffer = ByteBuffer.allocate(bytes);
+                viewBitmap.copyPixelsToBuffer(buffer);
+
+                byte[] array = buffer.array();
+                final long captureTimeNs =
+                        TimeUnit.MILLISECONDS.toNanos(SystemClock.elapsedRealtime());
+
+                // Create video frame
+                VideoDimensions dimensions = new VideoDimensions(width, height);
+                VideoFrame videoFrame = new VideoFrame(array,
+                        dimensions, VideoFrame.RotationAngle.ROTATION_0, captureTimeNs);
+
+                videoCapturerListener.onFrameCaptured(videoFrame);
                 //image.getPlanes()
 
 
@@ -381,6 +407,7 @@ public class IristickTwilioCapturer implements VideoCapturer {
         builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF);
     }
 
+
     private final org.webrtc.VideoCapturer.CapturerObserver observerAdapter =
             new org.webrtc.VideoCapturer.CapturerObserver() {
                 @Override
@@ -407,6 +434,7 @@ public class IristickTwilioCapturer implements VideoCapturer {
                             */
                 }
             };
+
     public interface Listener {
         void onFirstFrameAvailable();
         void onError(@NonNull Exception exception);
