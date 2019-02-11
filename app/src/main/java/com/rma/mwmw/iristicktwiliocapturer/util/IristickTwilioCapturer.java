@@ -4,23 +4,28 @@ import android.content.Context;
 import android.graphics.Point;
 import android.graphics.SurfaceTexture;
 import android.os.Handler;
-import android.os.Looper;
+import android.os.HandlerThread;
 import android.support.annotation.NonNull;
 import android.util.Log;
 import android.view.Surface;
-import android.view.TextureView;
 
 import com.iristick.smartglass.core.Headset;
 import com.iristick.smartglass.core.camera.CameraCharacteristics;
 import com.iristick.smartglass.core.camera.CameraDevice;
+import com.iristick.smartglass.core.camera.CaptureFailure;
+import com.iristick.smartglass.core.camera.CaptureListener;
 import com.iristick.smartglass.core.camera.CaptureRequest;
+import com.iristick.smartglass.core.camera.CaptureResult;
 import com.iristick.smartglass.core.camera.CaptureSession;
 import com.twilio.video.VideoCapturer;
 import com.twilio.video.VideoDimensions;
 import com.twilio.video.VideoFormat;
 import com.twilio.video.VideoPixelFormat;
 
+import org.webrtc.EglBase;
 import org.webrtc.SurfaceTextureHelper;
+import org.webrtc.VideoFrame;
+import org.webrtc.VideoSink;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -55,18 +60,26 @@ public class IristickTwilioCapturer implements VideoCapturer {
     private SurfaceTexture surfaceTexture;
     // TODO
     // Get handler from some surface texture helper
-    private Handler cameraThreadHandler = new Handler(Looper.getMainLooper());
+    private Handler cameraThreadHandler;// = new Handler(Looper.getMainLooper());
+    private HandlerThread cameraThread;
+    private VideoCapturer.Listener videoCapturerListener;
+
 
     public IristickTwilioCapturer(
             @NonNull Context context,
             @NonNull String cameraId,
             @NonNull Headset headset,
-            @NonNull IristickTwilioCapturer.Listener listener) {
+            @NonNull IristickTwilioCapturer.Listener listener,
+            @NonNull EglBase.Context sharedContext) {
         this.applicationContext = context.getApplicationContext();
         this.cameraId = cameraId;
         this.listener = listener;
         this.headset = headset;
         this.cameraNames = headset.getCameraIdList();
+
+
+        surfaceHelper = SurfaceTextureHelper.create("SurfaceTextureHelper", sharedContext);
+        cameraThreadHandler = surfaceHelper.getHandler();
     }
 
     /**
@@ -83,13 +96,19 @@ public class IristickTwilioCapturer implements VideoCapturer {
             @NonNull VideoFormat captureFormat,
             @NonNull VideoCapturer.Listener videoCapturerListener) {
 
-        synchronized (stateLock) {
-            if (sessionOpening || captureSession != null) {
-                Log.w(TAG, "Capture already started");
-                return;
-            }
+        if(surfaceHelper == null) {
+            Log.i(TAG, "waiting for surface helper");
+        }
+        else {
+            synchronized (stateLock) {
+                this.videoCapturerListener = videoCapturerListener;
+                if (sessionOpening || captureSession != null) {
+                    Log.w(TAG, "Capture already started");
+                    return;
+                }
 
-            openCamera(true);
+                openCamera(true);
+            }
         }
     }
 
@@ -175,8 +194,7 @@ public class IristickTwilioCapturer implements VideoCapturer {
         }
 
         // Set up capture format
-        // TODO
-        // Refactor using VideoFormat
+        // TODO: Refactor using VideoFormat
         width = sizes[sizes.length - 1].x;
         height = sizes[sizes.length - 1].y;
         frameRate = (int) Math.floor(1000000000L / streamConfigurationMap.getMinFrameDuration(sizes[sizes.length - 1]));
@@ -188,11 +206,6 @@ public class IristickTwilioCapturer implements VideoCapturer {
     @Override
     public boolean isScreencast() {
         return false;
-    }
-
-    public interface Listener {
-        void onFirstFrameAvailable();
-        void onError(@NonNull Exception iristickTwilioCapturerException);
     }
 
     private void checkIsOnCameraThread() {
@@ -215,20 +228,14 @@ public class IristickTwilioCapturer implements VideoCapturer {
 
 
                 // Set the desired camera resolution
+                surfaceTexture = surfaceHelper.getSurfaceTexture();
                 surfaceTexture.setDefaultBufferSize(width, height);
+                surface = new Surface(surfaceTexture);
 
                 // Create the capture session
                 captureSession = null;
                 outputs = new ArrayList<>();
                 outputs.add(surface);
-                // TODO
-                // Currently here
-                /*
-                https://github.com/wizzeye/wizzeye/blob/master/app/src/main/java/app/wizzeye/app/service/IristickCapturer.java
-                https://github.com/twilio/video-quickstart-android/blob/master/exampleCustomVideoCapturer/src/main/java/com/twilio/video/examples/customcapturer/ViewCapturer.java
-                package com.twilio.video.Camera2Capturer
-                package com.iristick.smartglass.examples.camera;
-                 */
                 cameraDevice.createCaptureSession(outputs, captureSessionListener, cameraThreadHandler);
             }
         }
@@ -259,12 +266,30 @@ public class IristickTwilioCapturer implements VideoCapturer {
         }
     };
 
+    private SurfaceTexture.OnFrameAvailableListener onFrameAvailableListener = new SurfaceTexture.OnFrameAvailableListener() {
+        @Override
+        public void onFrameAvailable(SurfaceTexture surfaceTexture) {
+            Log.i(TAG, "frame available");
+        }
+    };
+
     private final CaptureSession.Listener captureSessionListener = new CaptureSession.Listener() {
         @Override
         public void onConfigured(CaptureSession session) {
-            captureSession = session;
-            Log.i(TAG, "Capture session configured");
             // setCapture();
+            checkIsOnCameraThread();
+            synchronized (stateLock) {
+                Log.i(TAG, "Capture session configured");
+                captureSession = session;
+                // TODO: set sink
+                surfaceTexture.setOnFrameAvailableListener(onFrameAvailableListener);
+                observerAdapter.onCapturerStarted(true);
+                sessionOpening = false;
+                firstFrameObserved = false;
+                stateLock.notifyAll();
+
+                applyParametersInternal();
+            }
         }
 
         @Override
@@ -290,4 +315,61 @@ public class IristickTwilioCapturer implements VideoCapturer {
         public void onReady(CaptureSession session) {
         }
     };
+
+    private void applyParametersInternal() {
+        checkIsOnCameraThread();
+        synchronized (stateLock) {
+            Log.i(TAG, "applyParametersInternal");
+            if (sessionOpening || sessionStopping || captureSession == null)
+                return;
+
+            CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+            builder.addTarget(surface);
+            builder.set(CaptureRequest.SENSOR_FRAME_DURATION, 1000000000L / frameRate);
+            setupCaptureRequest(builder);
+            captureSession.setRepeatingRequest(builder.build(), null, null);
+
+        }
+    }
+
+    private void setupCaptureRequest(CaptureRequest.Builder builder) {
+        Log.i(TAG, "setupCaptureRequest");
+
+        builder.set(CaptureRequest.SCALER_ZOOM, (float)(1 << Math.max(0, 2 - 1)));
+        builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF);
+        builder.set(CaptureRequest.LASER_MODE, CaptureRequest.LASER_MODE_OFF);
+        builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF);
+    }
+
+    private final org.webrtc.VideoCapturer.CapturerObserver observerAdapter =
+            new org.webrtc.VideoCapturer.CapturerObserver() {
+                @Override
+                public void onCapturerStarted(boolean success) {
+                    videoCapturerListener.onCapturerStarted(success);
+                }
+
+                @Override
+                public void onCapturerStopped() {
+                }
+
+                @Override
+                public void onFrameCaptured(org.webrtc.VideoFrame videoFrame) {
+                    Log.i(TAG, "onFrameCaptured");
+                    /*
+                    org.webrtc.VideoFrame.Buffer buffer = videoFrame.getBuffer();
+                    VideoDimensions dimensions =
+                            new VideoDimensions(buffer.getWidth(), buffer.getHeight());
+                    VideoFrame.RotationAngle orientation =
+                            VideoFrame.RotationAngle.fromInt(videoFrame.getRotation());
+
+                    videoCapturerListener.onFrameCaptured(
+                            new VideoFrame(videoFrame, dimensions, orientation));
+                            */
+                }
+            };
+    public interface Listener {
+        void onFirstFrameAvailable();
+        void onError(@NonNull Exception exception);
+    }
+
 }
