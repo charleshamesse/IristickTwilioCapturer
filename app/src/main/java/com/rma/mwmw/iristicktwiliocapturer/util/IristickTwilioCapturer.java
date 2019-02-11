@@ -1,8 +1,11 @@
 package com.rma.mwmw.iristicktwiliocapturer.util;
 
 import android.content.Context;
+import android.graphics.ImageFormat;
 import android.graphics.Point;
 import android.graphics.SurfaceTexture;
+import android.media.Image;
+import android.media.ImageReader;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.support.annotation.NonNull;
@@ -63,6 +66,8 @@ public class IristickTwilioCapturer implements VideoCapturer {
     private Handler cameraThreadHandler;// = new Handler(Looper.getMainLooper());
     private HandlerThread cameraThread;
     private VideoCapturer.Listener videoCapturerListener;
+
+    private ImageReader imageReader;
 
 
     public IristickTwilioCapturer(
@@ -199,6 +204,10 @@ public class IristickTwilioCapturer implements VideoCapturer {
         height = sizes[sizes.length - 1].y;
         frameRate = (int) Math.floor(1000000000L / streamConfigurationMap.getMinFrameDuration(sizes[sizes.length - 1]));
 
+
+        imageReader = ImageReader.newInstance(width, height,
+                ImageFormat.JPEG, 2);
+        imageReader.setOnImageAvailableListener(imageReaderListener, cameraThreadHandler);
         return videoFormats;
     }
 
@@ -235,7 +244,8 @@ public class IristickTwilioCapturer implements VideoCapturer {
                 // Create the capture session
                 captureSession = null;
                 outputs = new ArrayList<>();
-                outputs.add(surface);
+                //outputs.add(surface);
+                outputs.add(imageReader.getSurface());
                 cameraDevice.createCaptureSession(outputs, captureSessionListener, cameraThreadHandler);
             }
         }
@@ -266,6 +276,35 @@ public class IristickTwilioCapturer implements VideoCapturer {
         }
     };
 
+    private final ImageReader.OnImageAvailableListener imageReaderListener = new ImageReader.OnImageAvailableListener() {
+        @Override
+        public void onImageAvailable(ImageReader reader) {
+            Log.d(TAG, "onImageAvailable");
+            try (final Image image = reader.acquireLatestImage()) {
+                if (image == null) {
+                    Log.i(TAG, "No image available in callback");
+                    return;
+                }
+                Log.i(TAG, "image available in callback" + image.getFormat());
+                //image.getPlanes()
+
+
+                /*
+                File file = new File(dir, PICTURE_FILENAME.format(new Date()));
+                try (OutputStream os = new FileOutputStream(file)) {
+                    Channels.newChannel(os).write(image.getPlanes()[0].getBuffer());
+                } catch (IOException e) {
+                    Log.e(TAG, "Failed to write capture to " + file.getPath(), e);
+                    Toast.makeText(mContext, R.string.call_toast_picture_fail, Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                MediaScannerConnection.scanFile(mContext, new String[] { file.toString() }, null, null);
+                Toast.makeText(mContext, R.string.call_toast_picture_taken, Toast.LENGTH_SHORT).show();
+                */
+            }
+        }
+    };
+
     private SurfaceTexture.OnFrameAvailableListener onFrameAvailableListener = new SurfaceTexture.OnFrameAvailableListener() {
         @Override
         public void onFrameAvailable(SurfaceTexture surfaceTexture) {
@@ -282,7 +321,8 @@ public class IristickTwilioCapturer implements VideoCapturer {
                 Log.i(TAG, "Capture session configured");
                 captureSession = session;
                 // TODO: set sink
-                surfaceTexture.setOnFrameAvailableListener(onFrameAvailableListener);
+                imageReader.setOnImageAvailableListener(imageReaderListener, cameraThreadHandler);
+                //surfaceTexture.setOnFrameAvailableListener(onFrameAvailableListener);
                 observerAdapter.onCapturerStarted(true);
                 sessionOpening = false;
                 firstFrameObserved = false;
@@ -324,7 +364,7 @@ public class IristickTwilioCapturer implements VideoCapturer {
                 return;
 
             CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-            builder.addTarget(surface);
+            builder.addTarget(imageReader.getSurface());
             builder.set(CaptureRequest.SENSOR_FRAME_DURATION, 1000000000L / frameRate);
             setupCaptureRequest(builder);
             captureSession.setRepeatingRequest(builder.build(), null, null);
